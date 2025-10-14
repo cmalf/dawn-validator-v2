@@ -1,0 +1,2 @@
+//support all proxies format -> delete this line
+//for backup bad proxies

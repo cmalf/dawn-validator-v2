@@ -1,0 +1,21 @@
+{
+  "name": "dawn-automation-v2",
+  "version": "1.0.0",
+  "description": "A script for automating login and farming tasks DAWN Validator Project.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "automation"
+  ],
+  "author": "panca(cmalf)",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "https-proxy-agent": "^7.0.6",
+    "js-yaml": "^4.1.0",
+    "random-user-agent": "^1.0.0",
+    "socks-proxy-agent": "^8.0.5"
+  }
+}
