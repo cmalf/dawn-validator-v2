@@ -30,7 +30,7 @@ const logger = {
 /**
  * Creates a proxy agent from a proxy URL.
  * @param {string} proxyUrl - The proxy URL (e.g., http://... or socks5://...).
- * @returns {HttpsProxyAgent|SocksProxyAgent|null} The proxy agent or null if the URL is invalid.
+ * @returns {HttpsProxyAgent|SocksProxyAgent|null} The proxy agent or null if the url is invalid.
  */
 function getProxyAgent(proxyUrl) {
     if (!proxyUrl) return null;
@@ -100,15 +100,33 @@ function isProxyError(error) {
 }
 
 /**
- * Fetches a single proxy from the backup file.
+ * BARU: Fungsi untuk menulis ulang file proxy backup.
+ * Overwrites the backup proxies file with an updated list.
+ * @param {string[]} proxies - The array of proxy strings to save.
+ */
+async function updateBackupProxiesFile(proxies) {
+    try {
+        const fileContent = proxies.join('\n');
+        await fs.writeFile(BACKUP_PROXIES_FILE, fileContent, 'utf8');
+    } catch (error) {
+        logger.error(`Failed to write to '${BACKUP_PROXIES_FILE}': ${error.message}`);
+    }
+}
+
+
+/**
+ * DIUBAH: Mengambil satu proxy dari file backup, dan menghapusnya dari file tersebut.
+ * Fetches a single proxy from the backup file and removes it from the file.
  * @returns {Promise<string|null>} A backup proxy URL or null if none are available.
  */
 async function getBackupProxy() {
     try {
         const backupProxies = await readFileLines(BACKUP_PROXIES_FILE);
         if (backupProxies.length > 0) {
-            // Return a random proxy from the backup list
-            return backupProxies[Math.floor(Math.random() * backupProxies.length)];
+            const proxyToUse = backupProxies.shift(); // Ambil proxy pertama dari daftar
+            await updateBackupProxiesFile(backupProxies); // Simpan sisa proxy ke file backup
+            logger.info(`Moved proxy ${proxyToUse} from backup to main list.`);
+            return proxyToUse;
         }
         logger.warn(`Backup proxy file '${BACKUP_PROXIES_FILE}' is empty or not found.`);
         return null;
