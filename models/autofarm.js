@@ -17,6 +17,8 @@ const {
 const ACCOUNTS_FILE = 'config/accounts_session.yaml';
 const PROXY_FILE = 'config/proxies.txt';
 const CYCLE_TIME_SECONDS = 10 * 60; // 10 minutes
+const MAX_RETRIES_429 = 3; // IMPROVEMENT: Define max retries for 429 error
+const RETRY_DELAY_SECONDS = 5; // IMPROVEMENT: Define delay between retries
 
 async function processAccount(account, proxy) {
     console.log(`\n${colors.blue}========================================${colors.reset}`);
@@ -33,7 +35,7 @@ async function processAccount(account, proxy) {
         } catch (ipError) {
             logger.warn(`Failed to get public IP for proxy. Using proxy URL.`);
             proxyDisplayInfo = proxy;
-            if (isProxyError(ipError)) throw ipError; // Re-throw proxy errors
+            if (isProxyError(ipError)) throw ipError; // Re-throw proxy errors to be handled by failover
         }
     }
     logger.info(`Using Proxy / IP: ${proxy ? colors.cyan + proxyDisplayInfo : 'None'}${colors.reset}`);
@@ -50,17 +52,37 @@ async function processAccount(account, proxy) {
     logger.success(`Points: ${colors.yellow}${points}${colors.reset}, Referral Points: ${colors.yellow}${referral_points}${colors.reset}`);
     await sleep(2000);
 
-    // --- 2. Send Ping ---
+    // --- 2. Send Ping (with Retry Logic for 429 error) ---
     logger.info(`[TASK] Sending ping...`);
     const pingUrl = 'https://api.dawninternet.com/ping?role=extension';
     const payload = { user_id: account.user_id, extension_id: "fpdkjdnhkakefebpekbdhillbhonfjjp", timestamp: new Date().toISOString() };
-    const pingResponse = await axiosInstance.post(pingUrl, payload);
-    if (pingResponse.status >= 200 && pingResponse.status < 300) {
-        logger.success(`Ping successful: ${pingResponse.data.message}`);
-    } else {
-        logger.error(`Ping failed. Status: ${pingResponse.status}`);
+
+    // IMPROVEMENT: Retry loop for 429 errors
+    for (let attempt = 1; attempt <= MAX_RETRIES_429; attempt++) {
+        try {
+            const pingResponse = await axiosInstance.post(pingUrl, payload);
+            if (pingResponse.status >= 200 && pingResponse.status < 300) {
+                logger.success(`Ping successful: ${pingResponse.data.message}`);
+                console.log(`${colors.blue}========================================${colors.reset}`);
+                return; // Exit the function on success
+            } else {
+                logger.error(`Ping failed with status: ${pingResponse.status}`);
+            }
+        } catch (error) {
+            // Check if it's a 429 error
+            if (error.response && error.response.status === 429) {
+                logger.warn(`Received 429 Too Many Requests. Attempt ${attempt}/${MAX_RETRIES_429}. Retrying in ${RETRY_DELAY_SECONDS}s...`);
+                if (attempt < MAX_RETRIES_429) {
+                    await sleep(RETRY_DELAY_SECONDS * 1000);
+                    continue; // Continue to the next iteration of the loop
+                }
+            }
+            // For any other error, or if max retries are exhausted, throw it to be handled by the main loop
+            throw error;
+        }
     }
-    console.log(`${colors.blue}========================================${colors.reset}`);
+    // This line is reached if all retries for 429 fail
+    throw new Error(`Ping failed for ${account.email} after ${MAX_RETRIES_429} attempts due to 429 errors.`);
 }
 
 async function runFarming() {
@@ -93,27 +115,28 @@ async function runFarming() {
             const timeRemaining = countdownTracker.getTimeRemaining(account.email);
 
             if (account.isSuspended) {
-                // This check is inside the loop in case we want to manually edit the file
-                continue; 
+                continue;
             }
 
             if (timeRemaining > 0) {
                 process.stdout.write(`\r${colors.yellow}[SKIP]${colors.reset} Account ${colors.cyan}${account.email}${colors.reset} is on cooldown. Time left: ${countdownTracker.formatTimeRemaining(account.email)}      `);
                 continue;
             }
-            
-            process.stdout.write(`\r                                                                                                   \r`); // Clear line
+
+            process.stdout.write(`\r                                                                                                   \r`);
 
             let success = false;
             let attempt = 0;
-            while (!success && attempt < 2) { // 1 main try, 1 retry with backup
+            while (!success && attempt < 2) {
                 const proxy = proxies.length > 0 ? proxies[i] : null;
                 attempt++;
                 try {
                     await processAccount(account, proxy);
+                    // FIX: Countdown is now ONLY started on SUCCESS
                     countdownTracker.startCountdown(account.email, CYCLE_TIME_SECONDS);
-                    logger.success(`Account ${account.email} finished. Cooldown started.`);
+                    logger.success(`Account ${account.email} finished. Cooldown for 10 minutes started.`);
                     success = true;
+
                 } catch (error) {
                     if (attempt < 2 && proxy && isProxyError(error)) {
                         logger.warn(`Proxy ${proxy} failed for ${account.email}. Replacing from backup.`);
@@ -127,9 +150,10 @@ async function runFarming() {
                             break;
                         }
                     } else {
-                        logger.error(`Task failed for ${account.email}: ${error.message}`);
-                        logger.warn(`Starting cooldown for ${account.email} anyway to prevent spam.`);
-                        countdownTracker.startCountdown(account.email, CYCLE_TIME_SECONDS);
+                        if (error.response) logger.error(`Request failed for ${account.email} with status ${error.response.status}: ${JSON.stringify(error.response.data)}`);
+                        else logger.error(`Task failed for ${account.email}: ${error.message}`);
+                        // FIX: REMOVED countdownTracker.startCountdown from the failure block.
+                        // Now it will just try again on the next main loop check.
                         break;
                     }
                 }
